@@ -23,7 +23,9 @@ BranchlessPayCore (main)
 | ComplianceReporter | `0xFa37524cD3a8ACdA2fD269Bcd598DFADc090adCB` |
 | AgentRegistry      | `0xC593Aa879379D5EEE196E03Dea8c3BBCcC82481d` |
 
-Explorer: https://testnet.monadexplorer.com
+Explorer: https://testnet.monadvision.com
+Contract Verified: Yes ✅ (Monad Testnet Explorer — MonadVision)
+Verification URL: https://testnet.monadvision.com/address/0x4886CDd0B95Cb8a247C0F4c62329B8D4a43b3FE6
 
 ---
 
@@ -104,6 +106,8 @@ Measured with `solidity-coverage v0.8.17` — 33 test cases across 3 test suites
 | **All in-scope** | **95.18%** | **67.35%** | **88.89%** | **96.69%** |
 
 Branch coverage gaps: `ComplianceReporter` branch 50% (unhappy paths for role-gated functions only hit one side); `AgentRegistry` line 85 (`getTotalAgents` not called in tests).
+
+**PK_Rules.sol (33% stmt):** Small country module — only `checkLimit()` happy path tested. `getDailyLimit()` and `getRegulators()` are pure view functions with no branching logic; their low coverage does not indicate untested business logic.
 
 ---
 
