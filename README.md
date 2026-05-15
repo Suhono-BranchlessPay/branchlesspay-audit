@@ -94,20 +94,27 @@ Per-agent rolling hourly window (3600s). State: `txCountThisHour[agent]` and `ho
 
 ## Test Coverage
 
-Measured with `solidity-coverage v0.8.17` — 33 test cases across 3 test suites.
+Measured with `solidity-coverage v0.8.17` — **98 test cases across 4 test suites.**
 
 | Contract | Stmts | Branch | Funcs | Lines |
 |----------|-------|--------|-------|-------|
-| **BranchlessPayCore.sol** | **100%** | **71.43%** | **100%** | **100%** |
-| **AgentRegistry.sol** | **94.44%** | **60%** | **87.5%** | **96%** |
-| **ComplianceReporter.sol** | **100%** | **50%** | **100%** | **100%** |
-| PK_Rules.sol | 33.33% | 100% | 50% | 66.67% |
-| MockUSDC.sol | 66.67% | 100% | 66.67% | 66.67% |
-| **All in-scope** | **95.18%** | **67.35%** | **88.89%** | **96.69%** |
+| **BranchlessPayCore.sol** | **100%** | **97.14%** | **100%** | **100%** |
+| **AgentRegistry.sol** | **100%** | **100%** | **100%** | **100%** |
+| **ComplianceReporter.sol** | **100%** | **100%** | **100%** | **100%** |
+| **PK_Rules.sol** | **100%** | **100%** | **100%** | **100%** |
+| **MockUSDC.sol** | **100%** | **100%** | **100%** | **100%** |
+| **All files** | **100%** | **98%** | **100%** | **100%** |
 
-Branch coverage gaps: `ComplianceReporter` branch 50% (unhappy paths for role-gated functions only hit one side); `AgentRegistry` line 85 (`getTotalAgents` not called in tests).
+### 98% Branch Coverage — 2 Architecturally Unreachable Branches
 
-**PK_Rules.sol (33% stmt):** Small country module — only `checkLimit()` happy path tested. `getDailyLimit()` and `getRegulators()` are pure view functions with no branching logic; their low coverage does not indicate untested business logic.
+The 2 uncovered branches are both the `nonReentrant` guard false paths in `executePPOB` (line 103) and `settlePPOB` (line 169). These cannot be triggered because:
+
+- `IRules.checkLimit` is declared `view` in the interface
+- The Solidity compiler emits `STATICCALL` (not `CALL`) for view-interface calls, even from non-view callers on Byzantium+ EVM
+- Under `STATICCALL`, any state-modifying re-entrant callback reverts at the EVM level before reaching the `nonReentrant` check
+- Neither `executePPOB` nor `settlePPOB` contain any other external calls that could trigger a callback
+
+The `nonReentrant` guard remains correct defensive programming (a future refactor that adds a non-view external call would be protected), but the false branch is dead code under the current architecture.
 
 ---
 
@@ -133,7 +140,8 @@ npx hardhat typechain
 pnpm test
 # or directly:
 TS_NODE_TRANSPILE_ONLY=true NODE_OPTIONS='--require ts-node/register' \
-  npx hardhat test test/BranchlessPayCore.test.ts test/AgentRegistry.test.ts test/ComplianceReporter.test.ts
+  npx hardhat test test/BranchlessPayCore.test.ts test/AgentRegistry.test.ts \
+    test/ComplianceReporter.test.ts test/PK_Rules.test.ts
 ```
 
 ### Coverage
@@ -168,4 +176,4 @@ TS_NODE_TRANSPILE_ONLY=true NODE_OPTIONS='--require ts-node/register' \
 ---
 
 *BranchlessPay LLC, Delaware USA | PT Antar Cepat Abadi, Indonesia*
-*Audit prepared: 2026-05-13*
+*Audit prepared: 2026-05-13 | Coverage updated: 2026-05-15*

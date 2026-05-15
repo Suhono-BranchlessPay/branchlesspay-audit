@@ -5,6 +5,7 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 contract MockUSDC is ERC20 {
     uint8 private constant _DECIMALS = 6;
+    bool public returnFalseOnTransfer;
 
     constructor() ERC20("USD Coin", "USDC") {
         _mint(msg.sender, 10_000_000 * 10 ** _DECIMALS);
@@ -16,5 +17,14 @@ contract MockUSDC is ERC20 {
 
     function mint(address to, uint256 amount) external {
         _mint(to, amount);
+    }
+
+    function setReturnFalseOnTransfer(bool value) external {
+        returnFalseOnTransfer = value;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) public override returns (bool) {
+        if (returnFalseOnTransfer) return false;
+        return super.transferFrom(from, to, amount);
     }
 }

@@ -8,11 +8,12 @@ describe("ComplianceReporter", function () {
   let admin: HardhatEthersSigner;
   let reporter: HardhatEthersSigner;
   let agent: HardhatEthersSigner;
+  let stranger: HardhatEthersSigner;
 
   const REPORTER_ROLE = ethers.keccak256(ethers.toUtf8Bytes("REPORTER_ROLE"));
 
   beforeEach(async function () {
-    [admin, reporter, agent] = await ethers.getSigners();
+    [admin, reporter, agent, stranger] = await ethers.getSigners();
 
     const ComplianceReporter = await ethers.getContractFactory("ComplianceReporter");
     compliance = await ComplianceReporter.deploy();
@@ -48,6 +49,25 @@ describe("ComplianceReporter", function () {
         compliance.connect(reporter).submitReport("SAR", "PK", "SBP", dataHash, now - 86400, now)
       ).to.emit(compliance, "ReportSubmitted");
     });
+
+    it("should assign sequential reportIds", async function () {
+      const now = Math.floor(Date.now() / 1000);
+      await compliance.connect(reporter).submitReport("DAILY_TX", "ID", "OJK", sampleHash(), now - 86400, now);
+      await compliance.connect(reporter).submitReport("MONTHLY", "PK", "SBP", sampleHash(), now - 2592000, now);
+      expect(await compliance.reportCount()).to.equal(2n);
+
+      const r0 = await compliance.reports(0n);
+      const r1 = await compliance.reports(1n);
+      expect(r0.reportType).to.equal("DAILY_TX");
+      expect(r1.reportType).to.equal("MONTHLY");
+    });
+
+    it("should revert if caller does not have REPORTER_ROLE", async function () {
+      const now = Math.floor(Date.now() / 1000);
+      await expect(
+        compliance.connect(stranger).submitReport("DAILY_TX", "ID", "OJK", sampleHash(), now - 86400, now)
+      ).to.be.reverted;
+    });
   });
 
   describe("updateKYC", function () {
@@ -64,6 +84,20 @@ describe("ComplianceReporter", function () {
         compliance.connect(reporter).updateKYC(agent.address, 2, "STANDARD")
       ).to.emit(compliance, "KYCUpdated").withArgs(agent.address, 2n, "STANDARD");
     });
+
+    it("should update all KYCStatus enum values", async function () {
+      for (let status = 0; status <= 4; status++) {
+        await compliance.connect(reporter).updateKYC(agent.address, status, "BASIC");
+        const [s] = await compliance.getAgentCompliance(agent.address);
+        expect(s).to.equal(BigInt(status));
+      }
+    });
+
+    it("should revert if caller does not have REPORTER_ROLE", async function () {
+      await expect(
+        compliance.connect(stranger).updateKYC(agent.address, 2, "STANDARD")
+      ).to.be.reverted;
+    });
   });
 
   describe("fileSAR", function () {
@@ -75,6 +109,12 @@ describe("ComplianceReporter", function () {
         .to.emit(compliance, "SARFiled")
         .withArgs(agent.address, "Suspicious activity detected", block!.timestamp);
     });
+
+    it("should revert if caller does not have REPORTER_ROLE", async function () {
+      await expect(
+        compliance.connect(stranger).fileSAR(agent.address, "reason")
+      ).to.be.reverted;
+    });
   });
 
   describe("blacklistAgent", function () {
@@ -83,6 +123,27 @@ describe("ComplianceReporter", function () {
 
       const [, , isBlacklisted] = await compliance.getAgentCompliance(agent.address);
       expect(isBlacklisted).to.equal(true);
+    });
+
+    it("should emit AgentBlacklisted event", async function () {
+      await expect(
+        compliance.connect(reporter).blacklistAgent(agent.address, "AML violation")
+      ).to.emit(compliance, "AgentBlacklisted").withArgs(agent.address, "AML violation");
+    });
+
+    it("should revert if caller does not have REPORTER_ROLE", async function () {
+      await expect(
+        compliance.connect(stranger).blacklistAgent(agent.address, "unauthorized")
+      ).to.be.reverted;
+    });
+  });
+
+  describe("getAgentCompliance", function () {
+    it("should return defaults for unknown agent", async function () {
+      const [status, tier, isBlacklisted] = await compliance.getAgentCompliance(stranger.address);
+      expect(status).to.equal(0n);
+      expect(tier).to.equal("");
+      expect(isBlacklisted).to.equal(false);
     });
   });
 });

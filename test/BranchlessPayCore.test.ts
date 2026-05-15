@@ -1,5 +1,6 @@
 import { expect } from "chai";
 import { ethers } from "hardhat";
+import { time } from "@nomicfoundation/hardhat-network-helpers";
 import { BranchlessPayCore, MockUSDC } from "../typechain-types";
 import { HardhatEthersSigner } from "@nomicfoundation/hardhat-ethers/signers";
 
@@ -54,6 +55,26 @@ describe("BranchlessPayCore", function () {
         core.connect(stranger).topUp(agent.address, USDC_6(100), "XENDIT_003", "ID")
       ).to.be.reverted;
     });
+
+    it("should revert if agent is zero address", async function () {
+      await expect(
+        core.connect(operator).topUp(ethers.ZeroAddress, USDC_6(100), "XENDIT_004", "ID")
+      ).to.be.revertedWith("BPC: invalid agent");
+    });
+
+    it("should revert if amount is zero", async function () {
+      await expect(
+        core.connect(operator).topUp(agent.address, 0, "XENDIT_005", "ID")
+      ).to.be.revertedWith("BPC: amount must be > 0");
+    });
+
+    it("should revert when USDC transferFrom returns false", async function () {
+      await usdc.setReturnFalseOnTransfer(true);
+      await expect(
+        core.connect(operator).topUp(agent.address, USDC_6(100), "XENDIT_006", "ID")
+      ).to.be.revertedWith("BPC: USDC transfer failed");
+      await usdc.setReturnFalseOnTransfer(false);
+    });
   });
 
   describe("settlePPOB", function () {
@@ -71,6 +92,18 @@ describe("BranchlessPayCore", function () {
       expect(balanceAfter).to.equal(expected);
     });
 
+    it("should settle with zero commission when rate is 0", async function () {
+      await core.connect(admin).setCommissionRate("XX", 0);
+      await usdc.mint(operator.address, USDC_6(100));
+      await usdc.connect(operator).approve(await core.getAddress(), USDC_6(100));
+      await core.connect(operator).topUp(agent.address, USDC_6(100), "REF", "XX");
+
+      const balanceBefore = await core.getBalance(agent.address);
+      await core.connect(oracle).settlePPOB(agent.address, USDC_6(10), "PULSA", "P1", "XX");
+      const balanceAfter = await core.getBalance(agent.address);
+      expect(balanceAfter).to.equal(balanceBefore - USDC_6(10));
+    });
+
     it("should revert if balance is insufficient", async function () {
       await expect(
         core.connect(oracle).settlePPOB(agent.address, USDC_6(200), "PULSA", "TELKOM-50K", "ID")
@@ -81,6 +114,13 @@ describe("BranchlessPayCore", function () {
       await expect(
         core.connect(stranger).settlePPOB(agent.address, USDC_6(10), "PULSA", "TELKOM-50K", "ID")
       ).to.be.reverted;
+    });
+
+    it("should revert when paused", async function () {
+      await core.connect(admin).emergencyPause();
+      await expect(
+        core.connect(oracle).settlePPOB(agent.address, USDC_6(10), "PULSA", "P1", "ID")
+      ).to.be.revertedWithCustomError(core, "EnforcedPause");
     });
 
     it("should trigger circuit breaker after maxTxPerHour", async function () {
@@ -98,6 +138,27 @@ describe("BranchlessPayCore", function () {
       await expect(
         core.connect(oracle).settlePPOB(agent.address, 1n, "PULSA", "pFinal", "ID")
       ).to.be.revertedWith("BPC: circuit breaker triggered");
+    });
+
+    it("should reset circuit breaker after an hour", async function () {
+      await core.connect(admin).setCommissionRate("ID", 0);
+      await usdc.mint(operator.address, USDC_6(1000000));
+      await usdc.connect(operator).approve(await core.getAddress(), USDC_6(1000000));
+      await core.connect(operator).topUp(agent.address, USDC_6(1000000), "XENDIT_BIG", "ID");
+
+      for (let i = 0; i < 500; i++) {
+        await core.connect(oracle).settlePPOB(agent.address, 1n, "PULSA", `p${i}`, "ID");
+      }
+
+      await expect(
+        core.connect(oracle).settlePPOB(agent.address, 1n, "PULSA", "pOver", "ID")
+      ).to.be.revertedWith("BPC: circuit breaker triggered");
+
+      await time.increase(3601);
+
+      await expect(
+        core.connect(oracle).settlePPOB(agent.address, 1n, "PULSA", "pAfterReset", "ID")
+      ).to.not.be.reverted;
     });
   });
 
@@ -132,6 +193,26 @@ describe("BranchlessPayCore", function () {
       const balanceAfter = await core.getBalance(agent.address);
       expect(balanceAfter).to.be.gt(balanceBefore);
     });
+
+    it("should revert for non-existent txId", async function () {
+      const fakeTxId = ethers.keccak256(ethers.toUtf8Bytes("fake"));
+      await expect(
+        core.connect(oracle).updateTxStatus(fakeTxId, true)
+      ).to.be.revertedWith("BPC: transaction not found");
+    });
+
+    it("should revert if tx is already finalized", async function () {
+      await core.connect(oracle).updateTxStatus(txId, true);
+      await expect(
+        core.connect(oracle).updateTxStatus(txId, false)
+      ).to.be.revertedWith("BPC: already finalized");
+    });
+
+    it("should revert if caller is not oracle", async function () {
+      await expect(
+        core.connect(stranger).updateTxStatus(txId, true)
+      ).to.be.reverted;
+    });
   });
 
   describe("emergencyPause", function () {
@@ -142,12 +223,39 @@ describe("BranchlessPayCore", function () {
       ).to.be.revertedWithCustomError(core, "EnforcedPause");
     });
 
+    it("should block executePPOB when paused", async function () {
+      await core.connect(operator).topUp(agent.address, USDC_6(100), "XENDIT_001", "ID");
+      await core.connect(admin).emergencyPause();
+      await expect(
+        core.connect(oracle).executePPOB(
+          agent.address, USDC_6(10), "BASIC", "ID", "P1",
+          ethers.keccak256(ethers.toUtf8Bytes("key1"))
+        )
+      ).to.be.revertedWithCustomError(core, "EnforcedPause");
+    });
+
     it("should allow topUp after unpause", async function () {
       await core.connect(admin).emergencyPause();
       await core.connect(admin).unpause();
       await expect(
         core.connect(operator).topUp(agent.address, USDC_6(100), "XENDIT_001", "ID")
       ).to.not.be.reverted;
+    });
+
+    it("should emit SystemPaused and SystemUnpaused events", async function () {
+      await expect(core.connect(admin).emergencyPause())
+        .to.emit(core, "SystemPaused").withArgs(admin.address);
+      await expect(core.connect(admin).unpause())
+        .to.emit(core, "SystemUnpaused").withArgs(admin.address);
+    });
+
+    it("should revert emergencyPause if caller is not admin", async function () {
+      await expect(core.connect(stranger).emergencyPause()).to.be.reverted;
+    });
+
+    it("should revert unpause if caller is not admin", async function () {
+      await core.connect(admin).emergencyPause();
+      await expect(core.connect(stranger).unpause()).to.be.reverted;
     });
   });
 
@@ -165,6 +273,12 @@ describe("BranchlessPayCore", function () {
       ).to.emit(core, "PPOBExecuted");
     });
 
+    it("should revert if caller is not oracle", async function () {
+      await expect(
+        core.connect(stranger).executePPOB(agent.address, USDC_6(10), "BASIC", "ID", "P1", idKey())
+      ).to.be.reverted;
+    });
+
     it("should debit balance with commission", async function () {
       const key = idKey();
       const before = await core.getBalance(agent.address);
@@ -172,6 +286,14 @@ describe("BranchlessPayCore", function () {
       const after = await core.getBalance(agent.address);
       const commission = USDC_6(10) * 100n / 10000n;
       expect(after).to.equal(before - USDC_6(10) + commission);
+    });
+
+    it("should debit with zero commission when rate is 0", async function () {
+      await core.connect(admin).setCommissionRate("ID", 0);
+      const before = await core.getBalance(agent.address);
+      await core.connect(oracle).executePPOB(agent.address, USDC_6(10), "BASIC", "ID", "P1", idKey());
+      const after = await core.getBalance(agent.address);
+      expect(after).to.equal(before - USDC_6(10));
     });
 
     it("should reject duplicate idempotency key", async function () {
@@ -201,6 +323,63 @@ describe("BranchlessPayCore", function () {
       ).to.be.revertedWith("BPC: amount exceeds country rules limit");
     });
 
+    it("should allow transaction within rules module limit", async function () {
+      const PK_Rules = await ethers.getContractFactory("PK_Rules");
+      const pkRules = await PK_Rules.deploy();
+      await core.connect(admin).setRulesModule("PK", await pkRules.getAddress());
+      await usdc.mint(operator.address, USDC_6(1000));
+      await usdc.connect(operator).approve(await core.getAddress(), USDC_6(1000));
+      await core.connect(operator).topUp(agent.address, USDC_6(1000), "XENDIT_PK", "PK");
+
+      await expect(
+        core.connect(oracle).executePPOB(agent.address, USDC_6(100), "BASIC", "PK", "TOPUP", idKey())
+      ).to.not.be.reverted;
+    });
+
+    it("should trigger circuit breaker after maxTxPerHour via executePPOB", async function () {
+      await core.connect(admin).setCommissionRate("ID", 0);
+      await usdc.mint(operator.address, USDC_6(1000000));
+      await usdc.connect(operator).approve(await core.getAddress(), USDC_6(1000000));
+      await core.connect(operator).topUp(agent.address, USDC_6(1000000), "XENDIT_BIG", "ID");
+
+      for (let i = 0; i < 500; i++) {
+        await core.connect(oracle).executePPOB(
+          agent.address, 1n, "BASIC", "ID", `p${i}`,
+          ethers.keccak256(ethers.toUtf8Bytes(`key-exec-${i}`))
+        );
+      }
+
+      await expect(
+        core.connect(oracle).executePPOB(
+          agent.address, 1n, "BASIC", "ID", "pFinal",
+          ethers.keccak256(ethers.toUtf8Bytes("key-exec-final"))
+        )
+      ).to.be.revertedWith("BPC: circuit breaker triggered");
+    });
+
+    it("should reset circuit breaker after an hour via executePPOB", async function () {
+      await core.connect(admin).setCommissionRate("ID", 0);
+      await usdc.mint(operator.address, USDC_6(1000000));
+      await usdc.connect(operator).approve(await core.getAddress(), USDC_6(1000000));
+      await core.connect(operator).topUp(agent.address, USDC_6(1000000), "XENDIT_BIG", "ID");
+
+      for (let i = 0; i < 500; i++) {
+        await core.connect(oracle).executePPOB(
+          agent.address, 1n, "BASIC", "ID", `p${i}`,
+          ethers.keccak256(ethers.toUtf8Bytes(`key-reset-${i}`))
+        );
+      }
+
+      await time.increase(3601);
+
+      await expect(
+        core.connect(oracle).executePPOB(
+          agent.address, 1n, "BASIC", "ID", "pAfterReset",
+          ethers.keccak256(ethers.toUtf8Bytes("key-after-reset"))
+        )
+      ).to.not.be.reverted;
+    });
+
     it("getActiveCountry should return country from rules module", async function () {
       const PK_Rules = await ethers.getContractFactory("PK_Rules");
       const pkRules = await PK_Rules.deploy();
@@ -215,10 +394,40 @@ describe("BranchlessPayCore", function () {
       ).to.emit(core, "ComplianceFlag");
     });
 
+    it("flagForCompliance should revert if caller lacks COMPLIANCE_ROLE", async function () {
+      await expect(
+        core.connect(stranger).flagForCompliance(agent.address, "test")
+      ).to.be.reverted;
+    });
+
     it("setCommissionRate should revert if over 10%", async function () {
       await expect(
         core.connect(admin).setCommissionRate("ID", 1001)
       ).to.be.revertedWith("BPC: rate too high (max 10%)");
+    });
+  });
+
+  describe("setRulesModule", function () {
+    it("should register a rules module", async function () {
+      const PK_Rules = await ethers.getContractFactory("PK_Rules");
+      const pkRules = await PK_Rules.deploy();
+      await expect(
+        core.connect(admin).setRulesModule("PK", await pkRules.getAddress())
+      ).to.emit(core, "RulesModuleUpdated");
+    });
+
+    it("should revert with zero address module", async function () {
+      await expect(
+        core.connect(admin).setRulesModule("PK", ethers.ZeroAddress)
+      ).to.be.revertedWith("BPC: invalid module address");
+    });
+
+    it("should revert if caller is not admin", async function () {
+      const PK_Rules = await ethers.getContractFactory("PK_Rules");
+      const pkRules = await PK_Rules.deploy();
+      await expect(
+        core.connect(stranger).setRulesModule("PK", await pkRules.getAddress())
+      ).to.be.reverted;
     });
   });
 
@@ -237,6 +446,30 @@ describe("BranchlessPayCore", function () {
         const rate = await core.commissionRates(country.code);
         expect(rate).to.equal(country.bps, `Mismatch for ${country.code}`);
       }
+    });
+
+    it("should allow admin to update commission rate", async function () {
+      await core.connect(admin).setCommissionRate("ID", 200);
+      expect(await core.commissionRates("ID")).to.equal(200n);
+    });
+
+    it("should allow setting rate to exactly 10% (1000 bps)", async function () {
+      await expect(
+        core.connect(admin).setCommissionRate("ID", 1000)
+      ).to.not.be.reverted;
+      expect(await core.commissionRates("ID")).to.equal(1000n);
+    });
+
+    it("should revert setCommissionRate if caller is not admin", async function () {
+      await expect(
+        core.connect(stranger).setCommissionRate("ID", 100)
+      ).to.be.reverted;
+    });
+  });
+
+  describe("MockUSDC", function () {
+    it("should return 6 decimals", async function () {
+      expect(await usdc.decimals()).to.equal(6);
     });
   });
 });
